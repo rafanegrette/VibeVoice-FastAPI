@@ -1,0 +1,23 @@
+# Core VibeVoice dependencies
+torch
+accelerate==1.6.0
+transformers==4.51.3
+diffusers
+tqdm
+numpy
+scipy
+librosa
+ml-collections
+absl-py
+av
+
+# FastAPI and web server dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+
+# Rate limiting
+slowapi>=0.1.9
+
+# Additional utilities
+python-multipart  # For form data handling if needed
