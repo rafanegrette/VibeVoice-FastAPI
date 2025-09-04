@@ -2,8 +2,6 @@ import os
 import re
 import time
 import uuid
-import queue
-import threading
 from typing import List, Tuple, Dict, Any, Optional
 
 import torch
@@ -25,20 +23,17 @@ from transformers.utils import logging
 logging.set_verbosity_info()
 logger = logging.get_logger(__name__)
 
-# --- Rate Limiting & Task Queue ---
+# --- Rate Limiting ---
 
 limiter = Limiter(key_func=get_remote_address)
-# An in-memory queue to hold incoming generation requests.
-task_queue = queue.Queue()
 
 # --- Global Variables & Model Loading ---
 
 model: Optional[VibeVoiceForConditionalGenerationInference] = None
 processor: Optional[VibeVoiceProcessor] = None
 voice_mapper: Optional[Any] = None
-tasks: Dict[str, Dict[str, Any]] = {}
 
-# --- Helper Classes (Unchanged) ---
+# --- Helper Classes ---
 
 class VoiceMapper:
     def __init__(self, base_path: str = "demo/voices"):
@@ -89,67 +84,50 @@ def parse_txt_script(txt_content: str) -> Tuple[List[str], List[str]]:
         speaker_numbers.append(current_speaker)
     return scripts, speaker_numbers
 
-# --- Background Worker for Inference ---
+# --- Audio Generation Function ---
 
-def generation_worker():
+def generate_audio_sync(script_content: str, speaker_names: List[str], cfg_scale: float = 1.3) -> str:
     """
-    A dedicated worker thread that continuously processes tasks from the queue.
+    Synchronously generate audio and return the file path.
     """
-    logger.info("Generation worker started.")
-    while True:
-        task_id, script_content, speaker_names, cfg_scale = task_queue.get()
-        if task_id is None: # A way to stop the worker thread if needed.
-            break
-        
-        try:
-            logger.info(f"Worker picked up task {task_id}.")
-            tasks[task_id]["status"] = "running"
-            start_time = time.time()
+    logger.info("Starting synchronous audio generation...")
+    start_time = time.time()
+    
+    # --- Core Inference Logic ---
+    scripts, speaker_numbers = parse_txt_script(script_content)
+    if not scripts:
+        raise ValueError("No valid scripts found in the provided text.")
 
-            # --- Core Inference Logic ---
-            scripts, speaker_numbers = parse_txt_script(script_content)
-            if not scripts: raise ValueError("No valid scripts found in the provided text.")
+    unique_speakers = sorted(list(set(speaker_numbers)), key=int)
+    if len(speaker_names) < len(unique_speakers):
+        raise ValueError(f"Script has {len(unique_speakers)} speakers, but only {len(speaker_names)} names were given.")
 
-            unique_speakers = sorted(list(set(speaker_numbers)), key=int)
-            if len(speaker_names) < len(unique_speakers):
-                raise ValueError(f"Script has {len(unique_speakers)} speakers, but only {len(speaker_names)} names were given.")
+    name_map = {num: name for num, name in zip(unique_speakers, speaker_names)}
+    voice_samples = [voice_mapper.get_voice_path(name_map[num]) for num in unique_speakers]
+    
+    inputs = processor(
+        text=['\n'.join(scripts)],
+        voice_samples=[voice_samples],
+        padding=True, return_tensors="pt", return_attention_mask=True
+    )
 
-            name_map = {num: name for num, name in zip(unique_speakers, speaker_names)}
-            voice_samples = [voice_mapper.get_voice_path(name_map[num]) for num in unique_speakers]
-            
-            inputs = processor(
-                text=['\n'.join(scripts)],
-                voice_samples=[voice_samples],
-                padding=True, return_tensors="pt", return_attention_mask=True
-            )
-
-            outputs = model.generate(
-                **inputs, max_new_tokens=None, cfg_scale=cfg_scale,
-                tokenizer=processor.tokenizer, generation_config={'do_sample': False},
-                verbose=False
-            )
-            # --- End Core Inference Logic ---
-            
-            generation_time = time.time() - start_time
-            logger.info(f"Task {task_id} finished in {generation_time:.2f}s")
-            
-            output_dir = "api_outputs"
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, f"{task_id}.wav")
-            processor.save_audio(outputs.speech_outputs[0], output_path=output_path)
-            
-            tasks[task_id].update({
-                "status": "completed",
-                "result_path": output_path,
-                "generation_time": generation_time
-            })
-            
-        except Exception as e:
-            logger.error(f"Task {task_id} failed: {e}", exc_info=True)
-            if task_id in tasks:
-                tasks[task_id].update({"status": "failed", "error": str(e)})
-        finally:
-            task_queue.task_done()
+    outputs = model.generate(
+        **inputs, max_new_tokens=None, cfg_scale=cfg_scale,
+        tokenizer=processor.tokenizer, generation_config={'do_sample': False},
+        verbose=False
+    )
+    # --- End Core Inference Logic ---
+    
+    generation_time = time.time() - start_time
+    logger.info(f"Audio generation completed in {generation_time:.2f}s")
+    
+    output_dir = "api_outputs"
+    os.makedirs(output_dir, exist_ok=True)
+    task_id = str(uuid.uuid4())
+    output_path = os.path.join(output_dir, f"{task_id}.wav")
+    processor.save_audio(outputs.speech_outputs[0], output_path=output_path)
+    
+    return output_path
 
 # --- FastAPI App Definition ---
 
@@ -177,11 +155,7 @@ async def startup_event():
         model.eval()
         model.set_ddpm_inference_steps(num_steps=10)
     
-    # Start the background worker thread
-    worker_thread = threading.Thread(target=generation_worker, daemon=True)
-    worker_thread.start()
-    
-    logger.info("Models loaded and worker thread started.")
+    logger.info("Models loaded successfully.")
 
 # --- Pydantic Models for API I/O ---
 
@@ -190,77 +164,47 @@ class GenerationRequest(BaseModel):
     speaker_names: List[str] = Field(..., description="List of voice preset names, e.g., ['en-Alice_woman']")
     cfg_scale: float = Field(1.3, ge=1.0, le=2.0)
 
-class GenerationResponse(BaseModel):
-    task_id: str
-    status: str
-    message: str
-    queue_position: int
-
-class TaskStatus(BaseModel):
-    task_id: str
-    status: str
-    queue_position: Optional[int] = None
-    error: Optional[str] = None
-    result_path: Optional[str] = None
-    generation_time: Optional[float] = None
-
 # --- API Endpoints ---
 
-@app.post("/generate", response_model=GenerationResponse, status_code=202)
+@app.post("/generate")
 @limiter.limit("10/minute")
 async def generate_audio(request: Request, generation_request: GenerationRequest):
-    task_id = str(uuid.uuid4())
-    queue_pos = task_queue.qsize() + 1
-    tasks[task_id] = {"status": "queued", "queue_position": queue_pos}
-    
-    task_queue.put((
-        task_id,
-        generation_request.script,
-        generation_request.speaker_names,
-        generation_request.cfg_scale
-    ))
-    
-    return {
-        "task_id": task_id,
-        "status": "queued",
-        "message": "Job accepted and placed in queue.",
-        "queue_position": queue_pos
-    }
-
-@app.get("/status/{task_id}", response_model=TaskStatus)
-async def get_task_status(task_id: str):
-    task = tasks.get(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    # Dynamically update queue position if still queued
-    if task["status"] == "queued":
-        try:
-            # Find the position in the current queue
-            all_queued_tasks = list(task_queue.queue)
-            pos = [item[0] for item in all_queued_tasks].index(task_id) + 1
-            task["queue_position"] = pos
-        except ValueError:
-            # Task might have just been picked up, status will update soon
-            task["queue_position"] = 0
-            
-    return {"task_id": task_id, **task}
-
-@app.get("/result/{task_id}")
-async def get_result(task_id: str):
-    task = tasks.get(task_id)
-    if not task: raise HTTPException(status_code=404, detail="Task not found")
-    if task["status"] != "completed":
-        raise HTTPException(status_code=400, detail=f"Task not complete. Status: {task['status']}")
-    result_path = task.get("result_path")
-    if not result_path or not os.path.exists(result_path):
-        raise HTTPException(status_code=404, detail="Result file not found.")
-    return FileResponse(result_path, media_type="audio/wav", filename=os.path.basename(result_path))
+    """
+    Generate audio synchronously and return the audio file directly.
+    """
+    try:
+        logger.info("Received generate request")
+        
+        # Generate audio synchronously
+        output_path = generate_audio_sync(
+            generation_request.script,
+            generation_request.speaker_names,
+            generation_request.cfg_scale
+        )
+        
+        # Return the audio file directly
+        filename = os.path.basename(output_path)
+        return FileResponse(
+            output_path, 
+            media_type="audio/wav", 
+            filename=filename
+        )
+        
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Audio generation failed")
 
 @app.get("/voices", response_model=List[str])
 async def list_voices():
-    if not voice_mapper: raise HTTPException(status_code=503, detail="VoiceMapper not initialized.")
+    """
+    List available voice presets.
+    """
+    if not voice_mapper:
+        raise HTTPException(status_code=503, detail="VoiceMapper not initialized.")
     return list(voice_mapper.available_voices.keys())
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8500)
