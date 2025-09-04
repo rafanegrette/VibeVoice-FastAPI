@@ -175,3 +175,6 @@ tags
 /checkpoints/
 exp
 .gradio/
+
+
+/api_outputs

@@ -26,49 +26,16 @@ A production-ready FastAPI wrapper for Microsoft's VibeVoice model, enabling hig
 
 ### Installation
 
-#### Option 1: Standard Installation with uv (Recommended)
+#### Option 1: Standard Installation (Recommended)
 ```bash
-# Install uv if you haven't already
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Create a conda profile
+conda create -n vibevoice python=3.11 -y && conda activate vibevoice
 
-# Clone this repository
-git clone https://github.com/dontriskit/VibeVoice-FastAPI
+# Clone the FastAPI wrapper
+git clone https://github.com/rafanegrette/VibeVoice-FastAPI
 cd VibeVoice-FastAPI
 
-# Create and activate virtual environment with uv
-uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-uv pip install -r requirements.txt
-uv pip install -e .
-```
-
-#### Option 2: Traditional pip Installation
-```bash
-# Clone this repository
-git clone https://github.com/dontriskit/VibeVoice-FastAPI
-cd VibeVoice-FastAPI
-
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-pip install -e .
-```
-
-#### Option 3: Docker Installation
-```bash
-# Using NVIDIA PyTorch Container
-sudo docker run --privileged --net=host --ipc=host \
-  --ulimit memlock=-1:-1 --ulimit stack=-1:-1 --gpus all \
-  --rm -it nvcr.io/nvidia/pytorch:24.07-py3
-
-# Inside container
-git clone <your-repo-url>
-cd VibeVoice-FastAPI
+# Install FastAPI dependencies
 pip install -r requirements.txt
 pip install -e .
 ```
@@ -76,14 +43,14 @@ pip install -e .
 ### Starting the API Server
 
 ```bash
-# Basic usage (defaults to port 8000)
+# Basic usage (defaults to port 8500)
 python main.py
 
 # Custom host and port
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn main:app --host 0.0.0.0 --port 8500 --reload
 ```
 
-The API will be available at `http://localhost:8000` with interactive documentation at `http://localhost:8000/docs`.
+The API will be available at `http://localhost:8500` with interactive documentation at `http://localhost:8500/docs`.
 
 ## 📚 API Documentation
 
@@ -110,15 +77,7 @@ Submit a text-to-speech generation request with multiple speakers.
 }
 ```
 
-**Response:**
-```json
-{
-  "task_id": "123e4567-e89b-12d3-a456-426614174000",
-  "status": "queued",
-  "message": "Job accepted and placed in queue.",
-  "queue_position": 1
-}
-```
+**Response:** Audio file download or error message.
 
 #### 2. Check Status
 **GET** `/status/{task_id}`
@@ -141,14 +100,7 @@ Monitor the progress of your generation job.
 - `completed`: Job finished successfully
 - `failed`: Job encountered an error
 
-#### 3. Download Result
-**GET** `/result/{task_id}`
-
-Download the generated audio file (WAV format).
-
-**Response:** Audio file download or error message.
-
-#### 4. List Available Voices
+#### 3. List Available Voices
 **GET** `/voices`
 
 Get all available voice presets.
@@ -198,12 +150,12 @@ print(f"Task submitted: {task_id}")
 
 # Poll for completion
 while True:
-    status_response = requests.get(f"http://localhost:8000/status/{task_id}")
+    status_response = requests.get(f"http://localhost:8500/status/{task_id}")
     status = status_response.json()["status"]
     
     if status == "completed":
         # Download the result
-        audio_response = requests.get(f"http://localhost:8000/result/{task_id}")
+        audio_response = requests.get(f"http://localhost:8500/result/{task_id}")
         with open("output.wav", "wb") as f:
             f.write(audio_response.content)
         print("Audio saved as output.wav")
@@ -219,7 +171,7 @@ while True:
 ### cURL Examples
 ```bash
 # Submit generation request
-curl -X POST "http://localhost:8000/generate" \
+curl -X POST "http://localhost:8500/generate" \
      -H "Content-Type: application/json" \
      -d '{
        "script": "Speaker 1: Hello world!\nSpeaker 2: How are you?",
@@ -227,14 +179,10 @@ curl -X POST "http://localhost:8000/generate" \
        "cfg_scale": 1.3
      }'
 
-# Check status
-curl "http://localhost:8000/status/YOUR_TASK_ID"
 
-# Download result
-curl -o output.wav "http://localhost:8000/result/YOUR_TASK_ID"
 
 # List voices
-curl "http://localhost:8000/voices"
+curl "http://localhost:8500/voices"
 ```
 
 ## ⚙️ Configuration
