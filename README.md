@@ -42,6 +42,14 @@ pip install -e .
 
 ### Starting the API Server
 
+You can use the script:
+
+```
+./start_vibevoice.sh
+```
+
+Or for more manual control:
+
 ```bash
 # Basic usage (defaults to port 8500)
 python main.py
