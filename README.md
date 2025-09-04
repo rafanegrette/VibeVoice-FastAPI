@@ -269,3 +269,11 @@ This project is a FastAPI wrapper around Microsoft's VibeVoice model. Please ref
 - Not recommended for commercial use without additional testing
 
 **Model is intended for research and development purposes. Use responsibly.**
+
+## Development
+
+To push code to your fork:
+
+```
+git push fork main
+```
