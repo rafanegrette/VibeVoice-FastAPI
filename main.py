@@ -167,7 +167,6 @@ class GenerationRequest(BaseModel):
 # --- API Endpoints ---
 
 @app.post("/generate")
-@limiter.limit("10/minute")
 async def generate_audio(request: Request, generation_request: GenerationRequest):
     """
     Generate audio synchronously and return the audio file directly.
